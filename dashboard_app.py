@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, List, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -39,22 +39,44 @@ if calculator_fn is None:
     )
 
 
-def get_retailer_inputs(retailer_name: str) -> object:
+def get_retailer_inputs(
+    retailer_name: str,
+    *,
+    default_total_sales: float = 50_000.0,
+    default_taxes: float = 4_000.0,
+    default_shipping: float = 2_500.0,
+    default_local_rate: float = 0.6,
+    local_rate_help: str | None = None,
+) -> object:
     st.sidebar.subheader(f"{retailer_name} inputs")
     total_sales = st.sidebar.number_input(
-        f"{retailer_name} total sales ($)", min_value=0.0, value=50000.0, step=1000.0
+        f"{retailer_name} total sales (NY State $)",
+        min_value=0.0,
+        value=default_total_sales,
+        step=1000.0,
+        help="Use New York State sales estimates for consistency across retailers.",
     )
     taxes = st.sidebar.number_input(
-        f"{retailer_name} taxes ($)", min_value=0.0, value=4000.0, step=500.0
+        f"{retailer_name} taxes ($)", min_value=0.0, value=default_taxes, step=500.0
     )
     shipping = st.sidebar.number_input(
-        f"{retailer_name} shipping ($)", min_value=0.0, value=2500.0, step=250.0
+        f"{retailer_name} shipping ($)", min_value=0.0, value=default_shipping, step=250.0
     )
     local_rate = st.sidebar.slider(
-        f"{retailer_name} local rate", min_value=0.0, max_value=1.0, value=0.6, step=0.05
+        f"{retailer_name} local rate",
+        min_value=0.0,
+        max_value=1.0,
+        value=default_local_rate,
+        step=0.05,
+        help=local_rate_help,
     )
     multiplier = st.sidebar.slider(
-        f"{retailer_name} multiplier", min_value=0.5, max_value=5.0, value=1.5, step=0.1
+        f"{retailer_name} multiplier",
+        min_value=1.3,
+        max_value=2.0,
+        value=1.6,
+        step=0.05,
+        help="Economic multiplier (Cornell guidance: 1.3–2.0 range).",
     )
     return RetailerInputs(
         name=retailer_name,
@@ -112,8 +134,8 @@ def render_kpis(metrics: List[dict[str, float | str]]) -> None:
     for column, metric in zip(columns, metrics):
         column.metric(
             label=f"{metric['name']} local impact",
-            value=f"${metric['local_impact']:,.0f}",
-            delta=f"{metric['share']:.1%} of sales",
+            value=f"{metric['share']:.1%} of sales",
+            delta=f"${metric['local_impact']:,.0f} local impact",
         )
 
 
@@ -135,10 +157,73 @@ def main() -> None:
     st.sidebar.title("Input assumptions")
     st.sidebar.info("Adjust the sliders and numbers to test different scenarios.")
 
-    flx_inputs = get_retailer_inputs("FLX Goods")
-    amazon_inputs = get_retailer_inputs("Amazon")
+    base_configs: Sequence[Dict[str, object]] = (
+        {
+            "name": "FLX Goods",
+            "defaults": {
+                "default_total_sales": 60_000.0,
+                "default_taxes": 4_500.0,
+                "default_shipping": 2_000.0,
+                "default_local_rate": 0.90,
+                "local_rate_help": "Recommended Cornell estimate for FLX Goods (90% local).",
+            },
+        },
+        {
+            "name": "Amazon",
+            "defaults": {
+                "default_total_sales": 150_000.0,
+                "default_taxes": 12_000.0,
+                "default_shipping": 8_000.0,
+                "default_local_rate": 0.10,
+                "local_rate_help": "Assumed Amazon local spending rate (10%).",
+            },
+        },
+        {
+            "name": "Walmart",
+            "defaults": {
+                "default_total_sales": 120_000.0,
+                "default_taxes": 9_500.0,
+                "default_shipping": 7_000.0,
+                "default_local_rate": 0.25,
+                "local_rate_help": "Example Walmart local rate assumption (25%).",
+            },
+        },
+        {
+            "name": "Wegmans",
+            "defaults": {
+                "default_total_sales": 90_000.0,
+                "default_taxes": 7_200.0,
+                "default_shipping": 5_500.0,
+                "default_local_rate": 0.35,
+                "local_rate_help": "Example Wegmans local rate assumption (35%).",
+            },
+        },
+    )
 
-    metrics = [calculate_metrics(flx_inputs), calculate_metrics(amazon_inputs)]
+    retailer_inputs = [
+        get_retailer_inputs(config["name"], **config["defaults"]) for config in base_configs
+    ]
+
+    st.sidebar.subheader("Custom competitors")
+    custom_names_raw = st.sidebar.text_input(
+        "Add competitor names (comma separated)",
+        value="",
+        help="Enter any other competitors you want to compare; leave blank to skip.",
+    )
+    custom_names = [name.strip() for name in custom_names_raw.split(",") if name.strip()]
+    for custom_name in custom_names:
+        retailer_inputs.append(
+            get_retailer_inputs(
+                custom_name,
+                default_total_sales=80_000.0,
+                default_taxes=6_000.0,
+                default_shipping=4_000.0,
+                default_local_rate=0.20,
+                local_rate_help="Adjust this estimate based on how local the competitor is.",
+            )
+        )
+
+    metrics = [calculate_metrics(retailer) for retailer in retailer_inputs]
 
     render_kpis(metrics)
     st.divider()
