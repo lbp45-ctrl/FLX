@@ -1,4 +1,9 @@
 # Run with: streamlit run dashboard_app.py
+# Features:
+# - FLX default local_rate = 0.9
+# - Single shared impact multiplier slider
+# - Dynamic competitors with suggested local rates
+# - Tooltips (help) on all sliders and inputs
 
 from __future__ import annotations
 
@@ -8,6 +13,12 @@ import pandas as pd
 import streamlit as st
 
 import local_impact_calculator as lic
+
+TOTAL_SALES_HELP = "Total sales revenue for this retailer (dollars)."
+TAXES_HELP = "Approximate taxes associated with these sales (dollars)."
+SHIPPING_HELP = "Approximate shipping or logistics costs for these sales (dollars)."
+LOCAL_RATE_HELP = "Fraction of each sales dollar that stays in the local region (0 = none, 1 = all)."
+IMPACT_MULTIPLIER_HELP = "Regional impact multiplier capturing ripple effects (direct + indirect + induced)."
 
 RetailerInputs = getattr(lic, "RetailerInputs", None)
 if RetailerInputs is None:
@@ -46,6 +57,7 @@ def get_retailer_inputs(
     default_taxes: float = 4_000.0,
     default_shipping: float = 2_500.0,
     default_local_rate: float = 0.6,
+    impact_multiplier: float = 1.6,
     local_rate_help: str | None = None,
 ) -> object:
     st.sidebar.subheader(f"{retailer_name} inputs")
@@ -54,13 +66,21 @@ def get_retailer_inputs(
         min_value=0.0,
         value=default_total_sales,
         step=1000.0,
-        help="Use New York State sales estimates for consistency across retailers.",
+        help=TOTAL_SALES_HELP,
     )
     taxes = st.sidebar.number_input(
-        f"{retailer_name} taxes ($)", min_value=0.0, value=default_taxes, step=500.0
+        f"{retailer_name} taxes ($)",
+        min_value=0.0,
+        value=default_taxes,
+        step=500.0,
+        help=TAXES_HELP,
     )
     shipping = st.sidebar.number_input(
-        f"{retailer_name} shipping ($)", min_value=0.0, value=default_shipping, step=250.0
+        f"{retailer_name} shipping ($)",
+        min_value=0.0,
+        value=default_shipping,
+        step=250.0,
+        help=SHIPPING_HELP,
     )
     local_rate = st.sidebar.slider(
         f"{retailer_name} local rate",
@@ -68,24 +88,20 @@ def get_retailer_inputs(
         max_value=1.0,
         value=default_local_rate,
         step=0.05,
-        help=local_rate_help,
+        help=local_rate_help or LOCAL_RATE_HELP,
     )
-    multiplier = st.sidebar.slider(
-        f"{retailer_name} multiplier",
-        min_value=1.3,
-        max_value=2.0,
-        value=1.6,
-        step=0.05,
-        help="Economic multiplier (Cornell guidance: 1.3–2.0 range).",
-    )
-    return RetailerInputs(
+    retailer = RetailerInputs(
         name=retailer_name,
         total_sales=total_sales,
         taxes=taxes,
         shipping=shipping,
         local_rate=local_rate,
-        multiplier=multiplier,
+        multiplier=impact_multiplier,
     )
+    # Keep employment/earnings multipliers aligned with the shared impact multiplier.
+    setattr(retailer, "employment_multiplier", impact_multiplier)
+    setattr(retailer, "earnings_multiplier", impact_multiplier)
+    return retailer
 
 
 def _compute_local_impact(retailer_inputs: object) -> Tuple[float, float]:
@@ -149,6 +165,26 @@ def render_chart(metrics: List[dict[str, float | str]]) -> None:
     st.bar_chart(chart_df)
 
 
+def _suggest_local_rate(name: str) -> float:
+    lowered = name.lower()
+    if "flx" in lowered:
+        return 0.9
+    if any(keyword in lowered for keyword in ("wegmans", "walmart", "amazon")):
+        return 0.1
+    return 0.3
+
+
+def _competitor_defaults(name: str) -> Dict[str, float | str]:
+    suggested_local_rate = _suggest_local_rate(name)
+    return {
+        "default_total_sales": 150_000.0,
+        "default_taxes": 12_000.0,
+        "default_shipping": 8_000.0,
+        "default_local_rate": suggested_local_rate,
+        "local_rate_help": f"Suggested local rate ({suggested_local_rate:.0%}) based on the competitor name.",
+    }
+
+
 def main() -> None:
     st.set_page_config(page_title="Local Impact Dashboard", layout="wide")
     st.title("Retailer local economic impact")
@@ -156,6 +192,15 @@ def main() -> None:
 
     st.sidebar.title("Input assumptions")
     st.sidebar.info("Adjust the sliders and numbers to test different scenarios.")
+
+    impact_multiplier = st.sidebar.slider(
+        "Impact multiplier",
+        min_value=1.0,
+        max_value=2.5,
+        value=1.6,
+        step=0.05,
+        help=IMPACT_MULTIPLIER_HELP,
+    )
 
     base_configs: Sequence[Dict[str, object]] = (
         {
@@ -178,48 +223,43 @@ def main() -> None:
                 "local_rate_help": "Assumed Amazon local spending rate (10%).",
             },
         },
-        {
-            "name": "Walmart",
-            "defaults": {
-                "default_total_sales": 120_000.0,
-                "default_taxes": 9_500.0,
-                "default_shipping": 7_000.0,
-                "default_local_rate": 0.25,
-                "local_rate_help": "Example Walmart local rate assumption (25%).",
-            },
-        },
-        {
-            "name": "Wegmans",
-            "defaults": {
-                "default_total_sales": 90_000.0,
-                "default_taxes": 7_200.0,
-                "default_shipping": 5_500.0,
-                "default_local_rate": 0.35,
-                "local_rate_help": "Example Wegmans local rate assumption (35%).",
-            },
-        },
     )
 
     retailer_inputs = [
-        get_retailer_inputs(config["name"], **config["defaults"]) for config in base_configs
+        get_retailer_inputs(
+            config["name"],
+            impact_multiplier=impact_multiplier,
+            **config["defaults"],
+        )
+        for config in base_configs
     ]
 
-    st.sidebar.subheader("Custom competitors")
-    custom_names_raw = st.sidebar.text_input(
-        "Add competitor names (comma separated)",
+    if "competitors" not in st.session_state:
+        # Clear this list via st.session_state["competitors"].clear() or the Clear button to reset added competitors.
+        st.session_state["competitors"] = []
+
+    st.sidebar.subheader("Add competitors")
+    competitor_name = st.sidebar.text_input(
+        "Competitor name",
         value="",
-        help="Enter any other competitors you want to compare; leave blank to skip.",
+        help="Name of another competitor to compare (e.g., Walmart, Wegmans).",
     )
-    custom_names = [name.strip() for name in custom_names_raw.split(",") if name.strip()]
-    for custom_name in custom_names:
+    add_clicked = st.sidebar.button("Add competitor")
+    if add_clicked:
+        cleaned_name = competitor_name.strip()
+        existing_names_lower = {config["name"].lower() for config in base_configs}
+        existing_names_lower.update(name.lower() for name in st.session_state["competitors"])
+        if cleaned_name and cleaned_name.lower() not in existing_names_lower:
+            st.session_state["competitors"].append(cleaned_name)
+    if st.sidebar.button("Clear competitors"):
+        st.session_state["competitors"] = []
+
+    for competitor_name in st.session_state["competitors"]:
         retailer_inputs.append(
             get_retailer_inputs(
-                custom_name,
-                default_total_sales=80_000.0,
-                default_taxes=6_000.0,
-                default_shipping=4_000.0,
-                default_local_rate=0.20,
-                local_rate_help="Adjust this estimate based on how local the competitor is.",
+                competitor_name,
+                impact_multiplier=impact_multiplier,
+                **_competitor_defaults(competitor_name),
             )
         )
 
